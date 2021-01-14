@@ -1,14 +1,12 @@
 // ----------------------------------------------------------------------------
-// defines engine actions available to control
+// acperience (c) scanner darkly 2021
 // ----------------------------------------------------------------------------
 
 #pragma once
 #include "types.h"
 
 #define MAX_PATTERN_LENGTH 32
-#define MAX_PITCH_VALUE 11
-
-#define PITCH_REST -1
+#define MAX_PITCH_VALUE 23
 
 #define GATE_REST 0
 #define GATE_ON   1
@@ -19,7 +17,7 @@
 #define TRANSPOSE_DOWN 2
 
 typedef struct {
-    s8 pitch; // -1 means not specified (PITCH_REST)
+    s8 pitch;
     u8 gate;
     u8 accent;
     u8 slide;
@@ -33,7 +31,6 @@ typedef struct {
 
 typedef struct {
     s8 current_step;
-    u8 determined_pitch[MAX_PATTERN_LENGTH];
 } pattern_state_t;
 
 typedef struct {
@@ -49,11 +46,10 @@ u8 e_get_current_step(engine_pattern_t *ep);
 void e_set_current_step(engine_pattern_t *ep, u8 step);
 
 s8 e_get_pitch(engine_pattern_t *ep, u8 step);
+s8 e_get_pitch_transposed(engine_pattern_t *ep, u8 step);
+s8 e_get_current_pitch(engine_pattern_t *ep);
+s8 e_get_current_pitch_transposed(engine_pattern_t *ep);
 void e_set_pitch(engine_pattern_t *ep, u8 step, s8 pitch);
-
-u8 e_get_determined_pitch(engine_pattern_t *ep, u8 step);
-u8 e_get_current_determined_pitch(engine_pattern_t *ep);
-s8 e_get_current_pitch_value(engine_pattern_t *ep);
 
 u8 e_get_current_gate(engine_pattern_t *ep);
 u8 e_get_gate(engine_pattern_t *ep, u8 step);

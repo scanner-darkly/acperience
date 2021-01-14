@@ -1,18 +1,9 @@
 // -----------------------------------------------------------------------------
-// controller - the glue between the engine and the hardware
-//
-// reacts to events (grid press, clock etc) and translates them into appropriate
-// engine actions. reacts to engine updates and translates them into user 
-// interface and hardware updates (grid LEDs, CV outputs etc)
-//
-// should talk to hardware via what's defined in interface.h only
-// should talk to the engine via what's defined in engine.h only
+// acperience (c) scanner darkly 2021
 // ----------------------------------------------------------------------------
 
 #include "compiler.h"
 #include "string.h"
-
-#include "music.h" // TODO remove
 
 #include "control.h"
 #include "interface.h"
@@ -24,61 +15,65 @@ shared_data_t shared;
 int selected_preset;
 
 // ----------------------------------------------------------------------------
-// firmware dependent stuff starts here
+// definitions and variables
 
 #define TRANSPOSE_OUTPUT 36
-
-#define OUTPUT_PITCH  0
-#define OUTPUT_GATE   0
-#define OUTPUT_ACCENT 1
-#define OUTPUT_SLIDE  2
-
-#define PAGE_TRACKER 0
-
-#define TRACKER_DIR_V 0
-#define TRACKER_DIR_H 1
-
 #define NO_STEP 255
 
-#define LED_PITCH 12
-#define LED_TRIGGER_ON 12
+#define PAGE_TRACKER 0
+#define TRACKER_DIR_V 0
+#define TRACKER_DIR_H 1
+#define TRACKER_LINES 8
+
+#define LED_TRIGGER_ON 10
 #define LED_TRIGGER_OFF 3
 #define LED_CURRENT_STEP 3
-#define LED_PIANO_W 12
-#define LED_PIANO_B 6
+#define LED_KEYBOARD_OFF 3
+#define LED_KEYBOARD_CURRENT 6
+#define LED_KEYBOARD_KEY 12
+#define LED_KEYBOARD_REST 3
 #define LED_MENU_ON 15
 #define LED_MENU_OFF 4
 
 // pattern
 engine_pattern_t pattern;
 
-// ui
-u8 page, tracker_dir, piano_on, step_mode, edited_step, piano_note, follow_page;
-u8 tracker_page_count, tracker_page, tracker_page_y1, tracker_page_y2, tracker_start_step;
-
 // sequencer
-u8 last_gate, last_accent, last_slide;
+u8 seq_on;
 
-// settings
+// ui
+u8 page, tracker_dir, follow_tracker_page;
+u8 tracker_page_count, tracker_selector_y1, tracker_selector_y2;
+u8 tracker_page, tracker_start_step;
+u8 step_mode, edited_step;
+u8 keyboard_latched;
+s8 keyboard_note;
+
+// settings TODO
+/*
 u8 setting_303_slide = 1;                       // [1]
 u8 setting_hold_accent_on_ties_and_rests = 1;   // [2]
 u8 setting_gate_stays_high_before_slide = 1;    // [3]
 u8 setting_slide_is_high_on_ties_and_rests = 1; // [4]
-
+*/
 
 static void grid_press(u8 x, u8 y, u8 pressed);
 static void grid_press_menu(u8 x, u8 y, u8 pressed);
 static void grid_press_tracker(u8 x, u8 y, u8 pressed);
+static void grid_press_tracker_menu(u8 x, u8 y, u8 pressed);
+static void grid_press_tracker_tracker(u8 x, u8 y, u8 pressed);
 
 static void render_menu(void);
 static void render_tracker(void);
+static void render_tracker_menu(void);
+static void render_tracker_tracker(void);
 
 static void step(void);
 static void step_off(void);
 
 
 // ----------------------------------------------------------------------------
-// functions for main.c
+// functions for multipass
 
 void init_presets(void) {
     for (u8 i = 0; i < get_preset_count(); i++) {
@@ -96,19 +91,24 @@ void init_control(void) {
     load_preset_meta_from_flash(selected_preset, &meta);
 
     e_init(&pattern);
+    seq_on = 1;
     
     page = PAGE_TRACKER;
     tracker_dir = TRACKER_DIR_V;
-    piano_on = 0;
-    step_mode = 0;
-    edited_step = 0;
-    follow_page = 0;
+    follow_tracker_page = 0;
     
-    tracker_page_count = MAX_PATTERN_LENGTH >> 3;
+    tracker_page_count = MAX_PATTERN_LENGTH / TRACKER_LINES;
+    tracker_selector_y1 = (TRACKER_LINES - tracker_page_count) >> 1;
+    tracker_selector_y2 = tracker_selector_y1 + tracker_page_count - 1;
+    
     tracker_page = 0;
-    tracker_page_y1 = (8 - tracker_page_count) >> 1;
-    tracker_page_y2 = tracker_page_y1 + tracker_page_count - 1;
     tracker_start_step = 0;
+
+    step_mode = 0;
+    edited_step = NO_STEP;
+
+    keyboard_latched = 0;
+    keyboard_note = -1;
     
     refresh_grid();
 }
@@ -141,9 +141,6 @@ void process_event(u8 event, u8 *data, u8 length) {
         case BUTTON_PRESSED:
             break;
     
-        case I2C_RECEIVED:
-            break;
-            
         case TIMED_EVENT:
             break;
         
@@ -161,11 +158,8 @@ void render_grid() {
     if (page == PAGE_TRACKER) render_tracker();
 }
 
-// ----------------------------------------------------------------------------
-// ----------------------------------------------------------------------------
-
 void grid_press(u8 x, u8 y, u8 pressed) {
-    if (x < 5) {
+    if (x < 2) {
         grid_press_menu(x, y, pressed);
         return;
     }
@@ -173,45 +167,220 @@ void grid_press(u8 x, u8 y, u8 pressed) {
     if (page == PAGE_TRACKER) grid_press_tracker(x, y, pressed);
 }
 
+// ----------------------------------------------------------------------------
+// main menu
+
+void render_menu() {
+    set_grid_led(0, 0, seq_on ? LED_MENU_ON : LED_MENU_OFF);
+}
+
 void grid_press_menu(u8 x, u8 y, u8 pressed) {
+    if (x == 0 && y == 0 && pressed) {
+        seq_on = !seq_on;
+        if (!seq_on) set_gate(0, 0);
+        refresh_grid();
+    }
+}
+
+// ----------------------------------------------------------------------------
+// tracker
+
+void render_tracker() {
+    render_tracker_menu();
+    render_tracker_tracker();
 }
 
 void grid_press_tracker(u8 x, u8 y, u8 pressed) {
-    if (pressed && x == 5 && y == 0) {
+    if (x < 8) {
+        grid_press_tracker_menu(x, y, pressed);
+        return;
+    }
+    
+    grid_press_tracker_tracker(x, y, pressed);
+}
+
+// ----------------------------------------------------------------------------
+// tracker menu
+
+void render_tracker_menu() {
+    set_grid_led(5, 0, tracker_dir == TRACKER_DIR_V ? LED_MENU_ON : LED_MENU_OFF);
+    set_grid_led(6, 0, follow_tracker_page ? LED_MENU_ON : LED_MENU_OFF);
+    set_grid_led(5, 7, step_mode ? LED_MENU_ON : LED_MENU_OFF);
+    set_grid_led(6, 7, keyboard_latched ? LED_MENU_ON : LED_MENU_OFF);
+
+    u8 playing_page = e_get_current_step(&pattern) / TRACKER_LINES;
+    
+    for (u8 y = 0; y < tracker_page_count; y++) {
+        set_grid_led(5, y + tracker_selector_y1, y == playing_page ? LED_MENU_ON : LED_MENU_OFF);
+        set_grid_led(6, y + tracker_selector_y1, y == tracker_page ? LED_MENU_ON : LED_MENU_OFF);
+    }
+}
+
+void grid_press_tracker_menu(u8 x, u8 y, u8 pressed) {
+    if (!pressed) return;
+    
+    if (x == 5 && y == 0) {
         tracker_dir = tracker_dir == TRACKER_DIR_V ? TRACKER_DIR_H : TRACKER_DIR_V;
         refresh_grid();
-        return;
     }
     
-    if (pressed && x == 6 && y == 0) {
-        follow_page = !follow_page;
+    else if (x == 6 && y == 0) {
+        follow_tracker_page = !follow_tracker_page;
         refresh_grid();
-        return;
     }
     
-    if (pressed && x == 5 && y == 7) {
+    else if (x == 5 && y == 7) {
         step_mode = !step_mode;
-        piano_on = step_mode;
+        if (step_mode && edited_step == NO_STEP) edited_step = 0;
+        else if (!keyboard_latched && !step_mode) edited_step = NO_STEP;
         refresh_grid();
-        return;
     }
     
-    if (pressed && x == 5 && y >= tracker_page_y1 && y <= tracker_page_y2) {
-        u8 page = y - tracker_page_y1;
-        s8 new_step = (e_get_current_step(&pattern) & 7) + (page << 3);
+    else if (x == 6 && y == 7 && !step_mode) {
+        keyboard_latched = !keyboard_latched;
+        if (keyboard_latched && !step_mode && edited_step == NO_STEP) {
+            s8 current_step = e_get_current_step(&pattern) - tracker_start_step;
+            edited_step = (current_step >= 0 && current_step < TRACKER_LINES) ? current_step : 0;
+        }
+        else if (!keyboard_latched && !step_mode) edited_step = NO_STEP;
+        refresh_grid();
+    }
+
+    else if (x == 5 && y >= tracker_selector_y1 && y <= tracker_selector_y2) {
+        u8 page = y - tracker_selector_y1;
+        s8 new_step = (e_get_current_step(&pattern) % TRACKER_LINES) + page * TRACKER_LINES;
         e_set_current_step(&pattern, new_step);
         refresh_grid();
-        return;
     }
 
-    if (pressed && x == 6 && y >= tracker_page_y1 && y <= tracker_page_y2) {
-        tracker_page = y - tracker_page_y1;
-        tracker_start_step = tracker_page << 3;
+    else if (x == 6 && y >= tracker_selector_y1 && y <= tracker_selector_y2) {
+        tracker_page = y - tracker_selector_y1;
+        tracker_start_step = tracker_page * TRACKER_LINES;
         refresh_grid();
-        return;
     }
+}
+    
+// ----------------------------------------------------------------------------
+// tracker tracker
 
-    if (x < 8) return;
+void render_tracker_tracker() {
+    s8 value, step;
+    s8 current_step = e_get_current_step(&pattern) - tracker_start_step;
+    u8 show_keyboard = edited_step != NO_STEP;
+    
+    if (tracker_dir == TRACKER_DIR_V) { // ||||||||
+        
+        for (u8 y = 0; y < TRACKER_LINES; y++) {
+            
+            step = y + tracker_start_step;
+            
+            // octave shift
+            value = e_get_transpose(&pattern, step);
+            set_grid_led(8, y, value == TRANSPOSE_DOWN ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
+            set_grid_led(10, y, value == TRANSPOSE_UP ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
+            
+            // pitch
+            set_grid_led(9, y, (y == edited_step ? LED_TRIGGER_ON : LED_TRIGGER_OFF) + (value ? LED_CURRENT_STEP : 0));
+            value = e_get_gate(&pattern, step);
+            if (show_keyboard && value) set_grid_led(9, y, get_grid_led(9, y) + 2);
+            
+            // resets
+            if (e_get_reset(&pattern, step)) set_grid_led(11, y, LED_TRIGGER_ON);
+            
+            if (!show_keyboard) {
+                // gate
+                set_grid_led(12, y, value == GATE_ON ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
+                set_grid_led(13, y, value == GATE_TIE ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
+                
+                // accent/slide
+                set_grid_led(14, y, e_get_accent(&pattern, step) == GATE_ON ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
+                set_grid_led(15, y, e_get_slide(&pattern, step) == GATE_ON ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
+            }
+        }
+        
+        if (current_step >= 0 && current_step < TRACKER_LINES) {
+            for (u8 x = 8; x < 11; x++)
+                set_grid_led(x, current_step, get_grid_led(x, current_step) + LED_CURRENT_STEP);
+            
+            if (!show_keyboard)
+                for (u8 x = 12; x < 16; x++)
+                    set_grid_led(x, current_step, get_grid_led(x, current_step) + LED_CURRENT_STEP);
+        }
+            
+        if (show_keyboard) {
+            for (u8 x = 13; x < 16; x++)
+                for (u8 y = 0; y < 8; y++) set_grid_led(x, y, LED_KEYBOARD_OFF);
+            
+            set_grid_led(12, 3, LED_KEYBOARD_REST);
+            set_grid_led(12, 4, LED_KEYBOARD_REST);
+            
+            if (keyboard_note != -1) 
+                set_grid_led(15 - (keyboard_note >> 3), 7 - (keyboard_note & 7), LED_KEYBOARD_KEY);
+
+            value = e_get_current_pitch(&pattern);
+            u8 x = 15 - (value >> 3);
+            u8 y = 7 - (value & 7);
+            set_grid_led(x, y, get_grid_led(x, y) + LED_KEYBOARD_OFF);
+        }
+
+    } else { // ========
+        
+        for (u8 x = 8; x < 8 + TRACKER_LINES; x++) {
+            
+            step = x + tracker_start_step - 8;
+            
+            // octave shift
+            value = e_get_transpose(&pattern, step);
+            set_grid_led(x, 0, value == TRANSPOSE_UP ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
+            set_grid_led(x, 2, value == TRANSPOSE_DOWN ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
+            
+            // pitch
+            set_grid_led(x, 1, x == 8 + edited_step ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
+            value = e_get_gate(&pattern, step);
+            if (show_keyboard && value) set_grid_led(x, 1, get_grid_led(x, 1) + 2);
+            
+            // resets
+            if (e_get_reset(&pattern, step)) set_grid_led(x, 3, LED_TRIGGER_ON);
+            
+            if (!show_keyboard) {
+                // gate
+                set_grid_led(x, 4, value == GATE_ON ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
+                set_grid_led(x, 5, value == GATE_TIE ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
+                
+                // accent/slide
+                set_grid_led(x, 6, e_get_accent(&pattern, step) == GATE_ON ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
+                set_grid_led(x, 7, e_get_slide(&pattern, step) == GATE_ON ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
+            }
+        }
+
+        if (current_step >= 0 && current_step < TRACKER_LINES) {
+            for (u8 y = 0; y < 3; y++)
+                set_grid_led(current_step + 8, y, get_grid_led(current_step + 8, y) + LED_CURRENT_STEP);
+            
+            if (!show_keyboard)
+                for (u8 y = 4; y < 8; y++)
+                    set_grid_led(current_step + 8, y, get_grid_led(current_step + 8, y) + LED_CURRENT_STEP);
+        }
+    
+        if (show_keyboard) {
+            for (u8 x = 8; x < 16; x++)
+                for (u8 y = 5; y < 8; y++) set_grid_led(x, y, LED_KEYBOARD_OFF);
+            
+            set_grid_led(11, 4, LED_KEYBOARD_REST);
+            set_grid_led(12, 4, LED_KEYBOARD_REST);
+            
+            if (keyboard_note != -1)
+                set_grid_led(8 + (keyboard_note & 7), 7 - (keyboard_note >> 3), LED_KEYBOARD_KEY);
+            
+            value = e_get_current_pitch(&pattern);
+            u8 x = 8 + (value & 7);
+            u8 y = 7 - (value >> 3);
+            set_grid_led(x, y, get_grid_led(x, y) + LED_KEYBOARD_OFF);
+        }
+    }
+}
+
+void grid_press_tracker_tracker(u8 x, u8 y, u8 pressed) {
     u8 value;
     x -= 8;
     if (tracker_dir == TRACKER_DIR_H) {
@@ -220,76 +389,89 @@ void grid_press_tracker(u8 x, u8 y, u8 pressed) {
         y = value;
     }
     
-    /*
-    if (!pressed) {
-        if (edited_step == y) edited_step = NO_STEP;
-        return;
-    }
-    */
+    u8 step = y + tracker_start_step;
     
-    if (pressed && x == 1) {
-        edited_step = y;
+    if (x == 0) {
+        if (!pressed) return;
+        value = tracker_dir == TRACKER_DIR_V ? TRANSPOSE_DOWN : TRANSPOSE_UP;
+        e_set_transpose(&pattern, step, e_get_transpose(&pattern, step) == value ? TRANSPOSE_OFF : value);
+        refresh_grid();
         return;
     }
-
-    if (step_mode && x > 3) {
-        if (tracker_dir == TRACKER_DIR_H) x = 11 - x;
-        
-        u8 note;
-        if (x < 6 && y == 0)
-            note = 0;
-        else if (x >= 6 && y == 1)
-            note = 1;
-        else if (x < 6 && y == 1)
-            note = 2;
-        else if (x >= 6 && y == 2)
-            note = 3;
-        else if (x < 6 && y == 2)
-            note = 4;
-        else if (x < 6 && y == 3)
-            note = 5;
-        else if (x >= 6 && y == 4)
-            note = 6;
-        else if (x < 6 && y == 4)
-            note = 7;
-        else if (x >= 6 && y == 5)
-            note = 8;
-        else if (x < 6 && y == 5)
-            note = 9;
-        else if (x >= 6 && y == 6)
-            note = 10;
-        else if (x < 6 && y == 6)
-            note = 11;
-        else
-            note = NO_STEP;
+    
+    if (x == 2) {
+        if (!pressed) return;
+        value = tracker_dir == TRACKER_DIR_V ? TRANSPOSE_UP : TRANSPOSE_DOWN;
+        e_set_transpose(&pattern, step, e_get_transpose(&pattern, step) == value ? TRANSPOSE_OFF : value);
+        refresh_grid();
+        return;
+    }
+    
+    if (x == 3) {
+        if (!pressed) return;
+        e_set_reset(&pattern, step, !e_get_reset(&pattern, step));
+        refresh_grid();
+        return;
+    }
+    
+    if (x == 1) {
         if (pressed) {
-            piano_note = note;
-            if (piano_note != NO_STEP) {
-                set_cv(OUTPUT_PITCH, ET[piano_note + TRANSPOSE_OUTPUT]);
-                set_gate(OUTPUT_GATE, 1);
+            edited_step = y;
+            keyboard_note = e_get_pitch(&pattern, edited_step);
+            if (!seq_on) {
+                e_set_current_step(&pattern, step);
+                set_cv(0, note_to_pitch(e_get_current_pitch_transposed(&pattern) + TRANSPOSE_OUTPUT));
+                set_gate(0, 1);
             }
-        } else if (piano_note == note) {
-            piano_note = NO_STEP;
-            set_gate(OUTPUT_GATE, 0);
+        } else {
+            if (!step_mode && !keyboard_latched && edited_step == y) {
+                edited_step = NO_STEP;
+                keyboard_note = -1;
+            }
+            if (!seq_on) set_gate(0, 0);
         }
+        refresh_grid();
+        return;
+    }
+    
+    if (edited_step != NO_STEP) { // keyboard note selection
+        step = edited_step + tracker_start_step;
+        
+        if (x == 4)  {
+            if ((y != 3 && y != 4) || !pressed) return;
+            e_set_gate(&pattern, step, GATE_REST);
+            if (step_mode) edited_step = (edited_step + 1) % TRACKER_LINES; // FIXME should go to loop start
+            refresh_grid();
+            return;
+        }
+        
+        if (tracker_dir == TRACKER_DIR_H) y = 7 - y;
+        u8 note = 7 - y + ((7 - x) << 3);
+        
+        if (pressed) {
+            keyboard_note = note;
+            
+            e_set_pitch(&pattern, step, keyboard_note);
+            e_set_gate(&pattern, step, GATE_ON);
+            if (step_mode) edited_step = (edited_step + 1) % TRACKER_LINES; // FIXME should go to loop start
+            
+            set_cv(0, note_to_pitch(e_get_pitch_transposed(&pattern, step) + TRANSPOSE_OUTPUT));
+            set_gate(0, 1);
+            
+        } else {
+            if (note == keyboard_note) {
+                if (!seq_on) set_gate(0, 0);
+                keyboard_note = -1;
+            }
+        }
+        
+        refresh_grid();
         return;
     }
     
     if (!pressed) return;
-    u8 step = y + tracker_start_step;
 
     switch (x) {
-        case 0:
-            value = tracker_dir == TRACKER_DIR_V ? TRANSPOSE_DOWN : TRANSPOSE_UP;
-            e_set_transpose(&pattern, step, e_get_transpose(&pattern, step) == value ? TRANSPOSE_OFF : value);
-            break;
-        case 2:
-            value = tracker_dir == TRACKER_DIR_V ? TRANSPOSE_UP : TRANSPOSE_DOWN;
-            e_set_transpose(&pattern, step, e_get_transpose(&pattern, step) == value ? TRANSPOSE_OFF : value);
-            break;
-        case 3:
-            e_set_reset(&pattern, step, !e_get_reset(&pattern, step));
-            break;
         case 4:
             value = e_get_gate(&pattern, step);
             e_set_gate(&pattern, step, value == GATE_ON ? GATE_REST : GATE_ON);
@@ -312,201 +494,27 @@ void grid_press_tracker(u8 x, u8 y, u8 pressed) {
 }
 
 // ----------------------------------------------------------------------------
-
-void render_menu() {
-}
-
-void render_tracker() {
-    s8 value, step;
-    s8 current_step = e_get_current_step(&pattern) - tracker_start_step;
-    
-    if (tracker_dir == TRACKER_DIR_V) { // ||||||||
-        
-        for (u8 y = 0; y < 8; y++) {
-            
-            step = y + tracker_start_step;
-            
-            // octave shift
-            value = e_get_transpose(&pattern, step);
-            set_grid_led(8, y, value == TRANSPOSE_DOWN ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
-            set_grid_led(10, y, value == TRANSPOSE_UP ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
-            
-            // pitch
-            set_grid_led(9, y, e_get_pitch(&pattern, step) == PITCH_REST ? LED_TRIGGER_OFF : LED_PITCH);
-            
-            // resets
-            if (e_get_reset(&pattern, step)) set_grid_led(11, y, LED_TRIGGER_ON);
-            
-            if (!piano_on) {
-                // gate
-                value = e_get_gate(&pattern, step);
-                set_grid_led(12, y, value == GATE_ON ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
-                set_grid_led(13, y, value == GATE_TIE ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
-                
-                // accent/slide
-                set_grid_led(14, y, e_get_accent(&pattern, step) == GATE_ON ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
-                set_grid_led(15, y, e_get_slide(&pattern, step) == GATE_ON ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
-            }
-        }
-        
-        if (current_step >= 0 && current_step <= 7) {
-            for (u8 x = 8; x < 11; x++)
-                set_grid_led(x, current_step, get_grid_led(x, current_step) + LED_CURRENT_STEP);
-            
-            if (!piano_on)
-                for (u8 x = 12; x < 16; x++)
-                    set_grid_led(x, current_step, get_grid_led(x, current_step) + LED_CURRENT_STEP);
-        }
-            
-        if (piano_on) {
-            set_grid_led(12, 0, LED_PIANO_W);
-            set_grid_led(13, 0, LED_PIANO_W);
-            
-            set_grid_led(12, 1, LED_PIANO_W);
-            set_grid_led(13, 1, LED_PIANO_W);
-            
-            set_grid_led(14, 1, LED_PIANO_B);
-            set_grid_led(15, 1, LED_PIANO_B);
-            
-            set_grid_led(12, 2, LED_PIANO_W);
-            set_grid_led(13, 2, LED_PIANO_W);
-            
-            set_grid_led(14, 2, LED_PIANO_B);
-            set_grid_led(15, 2, LED_PIANO_B);
-            
-            set_grid_led(12, 3, LED_PIANO_W);
-            set_grid_led(13, 3, LED_PIANO_W);
-            
-            set_grid_led(12, 4, LED_PIANO_W);
-            set_grid_led(13, 4, LED_PIANO_W);
-            
-            set_grid_led(14, 4, LED_PIANO_B);
-            set_grid_led(15, 4, LED_PIANO_B);
-            
-            set_grid_led(12, 5, LED_PIANO_W);
-            set_grid_led(13, 5, LED_PIANO_W);
-            
-            set_grid_led(14, 5, LED_PIANO_B);
-            set_grid_led(15, 5, LED_PIANO_B);
-            
-            set_grid_led(12, 6, LED_PIANO_W);
-            set_grid_led(13, 6, LED_PIANO_W);
-            
-            set_grid_led(14, 6, LED_PIANO_B);
-            set_grid_led(15, 6, LED_PIANO_B);
-        }
-
-    } else { // ========
-        
-        for (u8 x = 8; x < 16; x++) {
-            
-            step = x + tracker_start_step - 8;
-            
-            // octave shift
-            value = e_get_transpose(&pattern, step);
-            set_grid_led(x, 0, value == TRANSPOSE_UP ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
-            set_grid_led(x, 2, value == TRANSPOSE_DOWN ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
-            
-            // pitch
-            set_grid_led(x, 1, e_get_pitch(&pattern, step) == PITCH_REST ? LED_TRIGGER_OFF : LED_PITCH);
-            
-            // resets
-            if (e_get_reset(&pattern, step)) set_grid_led(x, 3, LED_TRIGGER_ON);
-            
-            if (!piano_on) {
-                // gate
-                value = e_get_gate(&pattern, step);
-                set_grid_led(x, 4, value == GATE_ON ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
-                set_grid_led(x, 5, value == GATE_TIE ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
-                
-                // accent/slide
-                set_grid_led(x, 6, e_get_accent(&pattern, step) == GATE_ON ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
-                set_grid_led(x, 7, e_get_slide(&pattern, step) == GATE_ON ? LED_TRIGGER_ON : LED_TRIGGER_OFF);
-            }
-        }
-        
-        if (current_step >= 0 && current_step <= 7) {
-            for (u8 y = 0; y < 3; y++)
-                set_grid_led(current_step + 8, y, get_grid_led(current_step + 8, y) + LED_CURRENT_STEP);
-            
-            if (!piano_on)
-                for (u8 y = 4; y < 8; y++)
-                    set_grid_led(current_step + 8, y, get_grid_led(current_step + 8, y) + LED_CURRENT_STEP);
-        }
-    
-        if (piano_on) {
-            set_grid_led(8, 6, LED_PIANO_W);
-            set_grid_led(8, 7, LED_PIANO_W);
-            
-            set_grid_led(9, 6, LED_PIANO_W);
-            set_grid_led(9, 7, LED_PIANO_W);
-            
-            set_grid_led(9, 4, LED_PIANO_B);
-            set_grid_led(9, 5, LED_PIANO_B);
-            
-            set_grid_led(10, 6, LED_PIANO_W);
-            set_grid_led(10, 7, LED_PIANO_W);
-            
-            set_grid_led(10, 4, LED_PIANO_B);
-            set_grid_led(10, 5, LED_PIANO_B);
-            
-            set_grid_led(11, 6, LED_PIANO_W);
-            set_grid_led(11, 7, LED_PIANO_W);
-            
-            set_grid_led(12, 6, LED_PIANO_W);
-            set_grid_led(12, 7, LED_PIANO_W);
-            
-            set_grid_led(12, 4, LED_PIANO_B);
-            set_grid_led(12, 5, LED_PIANO_B);
-            
-            set_grid_led(13, 6, LED_PIANO_W);
-            set_grid_led(13, 7, LED_PIANO_W);
-            
-            set_grid_led(13, 4, LED_PIANO_B);
-            set_grid_led(13, 5, LED_PIANO_B);
-            
-            set_grid_led(14, 6, LED_PIANO_W);
-            set_grid_led(14, 7, LED_PIANO_W);
-            
-            set_grid_led(14, 4, LED_PIANO_B);
-            set_grid_led(14, 5, LED_PIANO_B);
-        }
-        
-    }
-    
-    u8 playing_page = e_get_current_step(&pattern) >> 3;
-    
-    for (u8 y = 0; y < tracker_page_count; y++) {
-        set_grid_led(5, y + tracker_page_y1, y == playing_page ? LED_MENU_ON : LED_MENU_OFF);
-        set_grid_led(6, y + tracker_page_y1, y == tracker_page ? LED_MENU_ON : LED_MENU_OFF);
-    }
-    
-    set_grid_led(5, 0, tracker_dir == TRACKER_DIR_V ? LED_MENU_ON : LED_MENU_OFF);
-    set_grid_led(6, 0, follow_page ? LED_MENU_ON : LED_MENU_OFF);
-    set_grid_led(5, 7, step_mode ? LED_MENU_ON : LED_MENU_OFF);
-}
-
-// ----------------------------------------------------------------------------
+// sequencer
 
 void step() {
-    if (step_mode) return;
+    if (!seq_on) return;
     
     e_step(&pattern);
-    set_cv(OUTPUT_PITCH, ET[e_get_current_pitch_value(&pattern) + TRANSPOSE_OUTPUT]);
-    set_gate(OUTPUT_GATE, e_get_current_gate(&pattern) != GATE_REST);
-    set_gate(OUTPUT_ACCENT, e_get_current_accent(&pattern));
-    set_gate(OUTPUT_SLIDE, e_get_current_slide(&pattern));
+    set_cv(0, note_to_pitch(e_get_current_pitch_transposed(&pattern) + TRANSPOSE_OUTPUT));
+    set_gate(0, e_get_current_gate(&pattern) != GATE_REST);
+    set_gate(1, e_get_current_accent(&pattern));
+    set_gate(2, e_get_current_slide(&pattern));
     
-    if (follow_page) {
-        tracker_page = e_get_current_step(&pattern) >> 3;
-        tracker_start_step = tracker_page << 3;
+    if (follow_tracker_page) {
+        tracker_page = e_get_current_step(&pattern) / TRACKER_LINES;
+        tracker_start_step = tracker_page * TRACKER_LINES;
     }
 
     refresh_grid();
 }
 
 void step_off() {
-    if (step_mode) return;
+    if (!seq_on) return;
     
-    if (e_get_current_gate(&pattern) != GATE_TIE) set_gate(OUTPUT_GATE, 0);
+    if (e_get_current_gate(&pattern) != GATE_TIE) set_gate(0, 0);
 }

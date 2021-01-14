@@ -1,10 +1,5 @@
 // ----------------------------------------------------------------------------
-// defines functions for multipass to send events to the controller (grid 
-// presses etc)
-//
-// defines functions for engine to send updates (note on etc)
-//
-// defines data structures for multipass preset management
+// acperience (c) scanner darkly 2021
 // ----------------------------------------------------------------------------
 
 #pragma once

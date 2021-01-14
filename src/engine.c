@@ -1,8 +1,5 @@
 // ----------------------------------------------------------------------------
-// app engine
-//
-// hardware agnostic application logic
-// sends updates to control and provides actions for control to call
+// acperience (c) scanner darkly 2021
 // ----------------------------------------------------------------------------
 
 #include "engine.h"
@@ -10,7 +7,7 @@
 
 void e_init(engine_pattern_t *ep) {
     for (int i = 0; i < MAX_PATTERN_LENGTH; i++) {
-        ep->p.steps[i].pitch = PITCH_REST;
+        ep->p.steps[i].pitch = 0;
         ep->p.steps[i].gate = GATE_REST;
         ep->p.steps[i].accent = 0;
         ep->p.steps[i].slide = 0;
@@ -18,7 +15,6 @@ void e_init(engine_pattern_t *ep) {
     }
     
     ep->ps.current_step = 0;
-    for (int i = 0; i < MAX_PATTERN_LENGTH; i++) ep->ps.determined_pitch[i] = 0;
 }
 
 void e_reset(engine_pattern_t *ep) {
@@ -38,7 +34,6 @@ u8 e_get_current_step(engine_pattern_t *ep) {
 
 void e_set_current_step(engine_pattern_t *ep, u8 step) {
     if (step >= MAX_PATTERN_LENGTH) return;
-    
     ep->ps.current_step = step;
 }
 
@@ -48,35 +43,34 @@ s8 e_get_pitch(engine_pattern_t *ep, u8 step) {
     return ep->p.steps[step].pitch;
 }
 
-void e_set_pitch(engine_pattern_t *ep, u8 step, s8 pitch) {
-    if (step >= MAX_PATTERN_LENGTH) return;
-    if (pitch != PITCH_REST && pitch > MAX_PITCH_VALUE) return;
-    
-    ep->p.steps[step].pitch = pitch;
-    u8 last = 0;
-    for (int i = 0; i < MAX_PATTERN_LENGTH; i++) {
-        if (ep->p.steps[i].pitch != PITCH_REST) last = ep->p.steps[i].pitch;
-        ep->ps.determined_pitch[i] = last;
-    }
-    for (int i = 0; i < MAX_PATTERN_LENGTH; i++) {
-        if (ep->p.steps[i].pitch != PITCH_REST) break;
-        ep->ps.determined_pitch[i] = last;
-    }
+s8 e_get_pitch_transposed(engine_pattern_t *ep, u8 step) {
+    s8 pitch = e_get_pitch(ep, step);
+    if (ep->p.steps[step].transpose == TRANSPOSE_UP) pitch += 12;
+    else if (ep->p.steps[step].transpose == TRANSPOSE_DOWN) pitch -= 12;
+    return pitch;
 }
 
-u8 e_get_determined_pitch(engine_pattern_t *ep, u8 step) {
-    return ep->ps.determined_pitch[step];
+s8 e_get_current_pitch(engine_pattern_t *ep) {
+    return ep->p.steps[ep->ps.current_step].pitch;
 }
 
-u8 e_get_current_determined_pitch(engine_pattern_t *ep) {
-    return ep->ps.determined_pitch[ep->ps.current_step];
-}
-
-s8 e_get_current_pitch_value(engine_pattern_t *ep) {
-    s8 pitch = ep->ps.determined_pitch[ep->ps.current_step];
+s8 e_get_current_pitch_transposed(engine_pattern_t *ep) {
+    s8 pitch = e_get_current_pitch(ep);
     if (ep->p.steps[ep->ps.current_step].transpose == TRANSPOSE_UP) pitch += 12;
     else if (ep->p.steps[ep->ps.current_step].transpose == TRANSPOSE_DOWN) pitch -= 12;
     return pitch;
+}
+
+void e_set_pitch(engine_pattern_t *ep, u8 step, s8 pitch) {
+    if (step >= MAX_PATTERN_LENGTH) return;
+    ep->p.steps[step].pitch = pitch;
+    
+    u8 index;
+    for (u8 i = step + 1; i < step + MAX_PATTERN_LENGTH; i++) {
+        index = i % MAX_PATTERN_LENGTH;
+        if (ep->p.steps[index].gate != GATE_REST) break;
+        ep->p.steps[index].pitch = pitch;
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -91,7 +85,6 @@ u8 e_get_gate(engine_pattern_t *ep, u8 step) {
 
 void e_set_gate(engine_pattern_t *ep, u8 step, u8 gate) {
     if (step >= MAX_PATTERN_LENGTH) return;
-    
     ep->p.steps[step].gate = gate;
 }
 
@@ -107,7 +100,6 @@ u8 e_get_accent(engine_pattern_t *ep, u8 step) {
 
 void e_set_accent(engine_pattern_t *ep, u8 step, u8 accent) {
     if (step >= MAX_PATTERN_LENGTH) return;
-    
     ep->p.steps[step].accent = accent;
 }
 
@@ -123,7 +115,6 @@ u8 e_get_slide(engine_pattern_t *ep, u8 step) {
 
 void e_set_slide(engine_pattern_t *ep, u8 step, u8 slide) {
     if (step >= MAX_PATTERN_LENGTH) return;
-    
     ep->p.steps[step].slide = slide;
 }
 
@@ -139,7 +130,6 @@ u8 e_get_transpose(engine_pattern_t *ep, u8 step) {
 
 void e_set_transpose(engine_pattern_t *ep, u8 step, u8 transpose) {
     if (step >= MAX_PATTERN_LENGTH) return;
-    
     ep->p.steps[step].transpose = transpose;
 }
 
@@ -151,6 +141,5 @@ u8 e_get_reset(engine_pattern_t *ep, u8 step) {
 
 void e_set_reset(engine_pattern_t *ep, u8 step, u8 is_reset) {
     if (step >= MAX_PATTERN_LENGTH) return;
-    
     ep->p.steps[step].is_reset = is_reset;
 }
