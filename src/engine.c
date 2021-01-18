@@ -64,13 +64,6 @@ s8 e_get_current_pitch_transposed(engine_pattern_t *ep) {
 void e_set_pitch(engine_pattern_t *ep, u8 step, s8 pitch) {
     if (step >= MAX_PATTERN_LENGTH) return;
     ep->p.steps[step].pitch = pitch;
-    
-    u8 index;
-    for (u8 i = step + 1; i < step + MAX_PATTERN_LENGTH; i++) {
-        index = i % MAX_PATTERN_LENGTH;
-        if (ep->p.steps[index].gate != GATE_REST) break;
-        ep->p.steps[index].pitch = pitch;
-    }
 }
 
 // ----------------------------------------------------------------------------
